@@ -128,10 +128,13 @@ cmd_create() {
     fi
 
     # 實惠生產規格：1 vCPU, 3.75GB RAM, 20GB SSD, 自動擴容
+    # PostgreSQL 16+ 預設會開成 Enterprise Plus（不支援 db-custom 機型且貴很多），
+    # 明確指定 enterprise 版以使用自訂規格
     echo "⏳ 建立中（這通常需要 3-5 分鐘，請稍候）..."
     gcloud sql instances create "${INSTANCE_NAME}" \
         --project="${PROJECT_ID}" \
         --database-version="${DB_VERSION}" \
+        --edition=enterprise \
         --cpu=1 \
         --memory=3840MiB \
         --storage-type=SSD \
