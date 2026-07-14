@@ -25,6 +25,7 @@ POOL_NAME="pool-${SUFFIX}"
 PROVIDER_NAME="provider-${SUFFIX}"
 
 PROJECT_ID="${WIF_PROJECT_ID:-}"
+VPC_NETWORK=""   # --vpc 選項：generate_github_workflow 產生的部署設定加上 VPC egress
 
 # init 需要的完整權限
 INIT_PERMISSIONS=(
@@ -70,6 +71,8 @@ usage() {
 
 選項:
   -p, --project <id>   指定 GCP 專案 ID（預設: $WIF_PROJECT_ID 或 gcloud config 目前專案）
+  --vpc <VPC名稱>      generate_github_workflow 時加上 VPC egress 設定
+                       （服務需連 private IP Cloud SQL 時使用，通常是 default）
   -h, --help           顯示此說明
 
 環境變數:
@@ -82,6 +85,7 @@ usage() {
   ./wif.sh add fred/go-api
   ./wif.sh list
   ./wif.sh generate_github_workflow tag
+  ./wif.sh --vpc default generate_github_workflow main
 EOF
 }
 
@@ -451,6 +455,13 @@ cmd_generate_github_workflow() {
         image_tag_expr='${{ github.sha }}'
     fi
 
+    # 指定 --vpc 時加上 VPC egress，讓服務連得到 VPC 內的 private IP 資源（如 Cloud SQL）
+    # subnet 沿用 VPC 同名（auto-mode VPC 如 default 均適用）
+    local deploy_flags="--allow-unauthenticated"
+    if [ -n "${VPC_NETWORK}" ]; then
+        deploy_flags="${deploy_flags} --network=${VPC_NETWORK} --subnet=${VPC_NETWORK} --vpc-egress=private-ranges-only"
+    fi
+
     {
         echo "name: Deploy to Cloud Run"
         echo ""
@@ -536,9 +547,15 @@ YAML
         service: ${{ env.SERVICE_NAME }}
         region: ${{ env.REGION }}
         image: ${{ env.IMAGE_TAG }}
-        # 公開 API 才需要 allow-unauthenticated，內部微服務請移除此行
-        flags: '--allow-unauthenticated'
+        # 需要傳環境變數 / Secret Manager 機密給服務時，可打開以下設定：
+        # env_vars: |
+        #   APP_ENV=production
+        #   DB_HOST=10.x.x.x
+        # secrets: |
+        #   DB_PASSWORD=db-password:latest
+        # 公開 API 才需要 allow-unauthenticated，內部微服務請移除
 YAML
+        printf "        flags: '%s'\n" "${deploy_flags}"
     } > "${output}"
 
     ok "已產生 '${output}'（觸發模式: ${trigger}，專案: ${PROJECT_ID}）。"
@@ -573,6 +590,11 @@ while [ $# -gt 0 ]; do
         -p|--project)
             [ -n "${2:-}" ] || die "選項 '$1' 需要參數。"
             PROJECT_ID="$2"
+            shift 2
+            ;;
+        --vpc)
+            [ -n "${2:-}" ] || die "選項 '$1' 需要參數。"
+            VPC_NETWORK="$2"
             shift 2
             ;;
         -h|--help)

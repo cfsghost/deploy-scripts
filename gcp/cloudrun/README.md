@@ -92,6 +92,14 @@ gcloud run services list --region asia-east1
                              產生已填好 env 的 GitHub Actions deploy.yaml（預設輸出到 ./deploy.yaml）
 ```
 
+服務需要連 **private IP 的 Cloud SQL** 時，產生 workflow 時加 `--vpc`，部署設定會多出 VPC egress 相關 flags：
+
+```bash
+./wif.sh --vpc default generate_github_workflow main
+```
+
+（前置的網路與資料庫設定見 `../network/README.md` 與 `../cloudsql/README.md` 的 Private IP 模式。）
+
 ### 選項與環境變數
 
 | 設定 | 說明 |
