@@ -9,6 +9,7 @@
 | `network/` | `network.sh` | VPC 私有服務連線（Cloud SQL private IP 的前置設定） |
 | `cloudsql/` | `sql.sh` | Cloud SQL PostgreSQL 實例、資料庫、帳號 |
 | `cloudrun/` | `wif.sh` | WIF 免金鑰部署授權、GitHub Actions workflow 產生 |
+| `lb/` | `lb.sh` | 自訂網域 HTTPS LB，按路徑分流到前後端 Cloud Run 服務 |
 
 各工具的完整說明見各目錄的 README；本文描述如何把它們串起來。
 
@@ -93,6 +94,19 @@ git push origin main          # 觸發第一次部署
 gcloud run services list --region asia-east1    # 取得服務網址
 ```
 
+### 階段 6（選用）：自訂網域與前後端分流
+
+前後端各是一個 Cloud Run 服務、想用一個網域對外時，用 LB 做路徑分流（`/api/*` → backend，其餘 → frontend）：
+
+```bash
+cd ../lb
+./lb.sh setup app.example.com --frontend my-frontend --backend my-backend
+# 照輸出指示設定 DNS A 記錄，憑證簽發進度用 ./lb.sh check 追蹤
+./lb.sh lock my-frontend && ./lb.sh lock my-backend   # 建議：關閉 run.app 直連
+```
+
+單一服務只想掛網域也適用（不加 `--backend` 即可），詳見 `lb/README.md`。
+
 ## 精簡流程（不需要資料庫）
 
 只要 Cloud Run 的話，跳過階段 1-3：
@@ -117,7 +131,7 @@ cd gcp/cloudrun
 
 ## 注意事項
 
-- Cloud SQL 實例是**持續計費**資源，測試完記得 `./sql.sh delete`
+- Cloud SQL 實例與 LB 的 forwarding rule 都是**持續計費**資源，測試完記得 `./sql.sh delete` / `./lb.sh delete`
 - private IP 模式下，本機與 CI 連不到資料庫（migration 建議做成 Cloud Run job），詳見 `cloudsql/README.md`
 - `.env` 與 `generate_github_secrets` 的輸出都含明文密碼，不要 commit；連線資訊進 GitHub Secrets 後即可刪除
 - GitHub Secrets 路線的機密最終會成為 Cloud Run 的**環境變數**（能查看服務設定的人看得到）；需要更嚴格的隔離與稽核時改用 Secret Manager（見階段 3 的替代方案）
