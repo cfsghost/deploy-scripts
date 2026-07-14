@@ -547,10 +547,16 @@ YAML
         service: ${{ env.SERVICE_NAME }}
         region: ${{ env.REGION }}
         image: ${{ env.IMAGE_TAG }}
-        # 需要傳環境變數 / Secret Manager 機密給服務時，可打開以下設定：
+        # 需要傳環境變數給服務時，可打開以下設定；機密值可引用 GitHub Secrets
+        # （用 gcp/cloudsql 的 './sql.sh generate_github_secrets <owner>/<repo>' 一次設定好）：
         # env_vars: |
         #   APP_ENV=production
-        #   DB_HOST=10.x.x.x
+        #   DB_HOST=${{ secrets.DB_HOST }}
+        #   DB_PORT=${{ secrets.DB_PORT }}
+        #   DB_NAME=${{ secrets.DB_NAME }}
+        #   DB_USER=${{ secrets.DB_USER }}
+        #   DB_PASSWORD=${{ secrets.DB_PASSWORD }}
+        # 機密若改放 GCP Secret Manager，則改用 secrets 參數掛載：
         # secrets: |
         #   DB_PASSWORD=db-password:latest
         # 公開 API 才需要 allow-unauthenticated，內部微服務請移除

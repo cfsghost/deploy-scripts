@@ -33,7 +33,7 @@ DB_PASSWORD=<自動產生的隨機密碼>
 CLOUD_SQL_CONNECTION_NAME=<project>:<region>:<instance>
 ```
 
-> ⚠️ `.env` 含明文密碼，請勿 commit 進版控。正式環境建議把密碼放進 Secret Manager。
+> ⚠️ `.env` 含明文密碼，請勿 commit 進版控。正式環境建議把連線資訊放進 GitHub Secrets（見下方 `generate_github_secrets`）或 GCP Secret Manager。
 
 ## 指令一覽
 
@@ -43,6 +43,8 @@ CLOUD_SQL_CONNECTION_NAME=<project>:<region>:<instance>
 ./sql.sh delete [實例名稱]             刪除實例及其中所有資料（需輸入實例名稱確認）
 ./sql.sh create_database <db名稱>      在實例中建立資料庫
 ./sql.sh create_user <帳號> [db名稱]   建立帳號並自動產生隨機密碼，輸出 .env 格式連線資訊
+./sql.sh generate_github_secrets <owner/repo> [.env檔]
+                                       把 .env 連線資訊轉成 gh secret set 命令（預設讀 ./.env）
 ```
 
 `create` 與 `create_database` 皆為冪等操作，資源已存在時會跳過而不會報錯，可安心重跑。
@@ -78,7 +80,29 @@ gcloud run services update <service> --region asia-east1 \
 # 連線位址改用 /cloudsql/<CLOUD_SQL_CONNECTION_NAME>
 ```
 
-搭配本 repo 的 `gcp/cloudrun/wif.sh` 部署流程使用時，`DB_PASSWORD` 建議放 Secret Manager，再由 deploy workflow 的 `secrets` 參數掛給服務。
+## 把連線資訊放進 GitHub Secrets
+
+搭配本 repo 的 `gcp/cloudrun/wif.sh` 部署流程時，最簡單的機密管理方式是把整組連線資訊放進目標 repo 的 GitHub Actions Secrets：
+
+```bash
+./sql.sh create_user app_user my_app_db > .env
+./sql.sh generate_github_secrets <owner>/<repo>      # 讀取 ./.env，輸出 gh 命令
+```
+
+輸出是一串現成的 `gh secret set` 命令，複製到**已登入 GitHub CLI 的機器**（`gh auth login`）執行即可。之後 deploy workflow 的 `env_vars` 直接引用：
+
+```yaml
+        env_vars: |
+          DB_HOST=${{ secrets.DB_HOST }}
+          DB_PORT=${{ secrets.DB_PORT }}
+          DB_NAME=${{ secrets.DB_NAME }}
+          DB_USER=${{ secrets.DB_USER }}
+          DB_PASSWORD=${{ secrets.DB_PASSWORD }}
+```
+
+（`wif.sh generate_github_workflow` 產生的 deploy.yaml 已內建這段註解範例，打開即可。）
+
+> 取捨：這條路線的機密最終會成為 Cloud Run 的**環境變數**，能查看服務設定的人看得到。需要版本管理、存取稽核或更嚴格隔離時，把 `DB_PASSWORD` 放 GCP Secret Manager（`gcloud secrets create` + 授權執行身分 `roles/secretmanager.secretAccessor`），deploy workflow 改用 `secrets:` 參數掛載。
 
 ## Private IP 模式（不開公網）
 

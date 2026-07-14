@@ -38,20 +38,17 @@ cd ../cloudsql
 ./sql.sh create_user app_user my_app_db > .env   # DB_HOST 會是私有 IP（10.x.x.x）
 ```
 
-### 階段 3：機密與執行權限（每個專案一次）
+### 階段 3：連線資訊放進 GitHub Secrets（每個 repo 一次）
 
-把資料庫密碼放進 Secret Manager，並授權給 Cloud Run 的執行身分（預設是 compute SA）：
+把階段 2 的 `.env` 轉成一串 `gh secret set` 命令：
 
 ```bash
-# 從 .env 取出密碼建立 secret
-grep '^DB_PASSWORD=' .env | cut -d= -f2- | tr -d '\n' | \
-    gcloud secrets create db-password --data-file=-
-
-# 授權執行身分讀取（<PROJECT_NUMBER> 可用 gcloud projects describe <PROJECT_ID> 查）
-gcloud secrets add-iam-policy-binding db-password \
-    --member="serviceAccount:<PROJECT_NUMBER>-compute@developer.gserviceaccount.com" \
-    --role="roles/secretmanager.secretAccessor"
+./sql.sh generate_github_secrets <owner>/<repo>      # 預設讀取 ./.env
 ```
+
+把輸出的命令複製到**已登入 GitHub CLI 的機器**上執行（`gh auth login`），`DB_HOST`、`DB_USER`、`DB_PASSWORD` 等就會全部進到該 repo 的 Actions Secrets，之後 workflow 直接用 `${{ secrets.DB_HOST }}` 引用。
+
+> **替代方案（GCP Secret Manager）**：需要版本管理、存取稽核，或不希望密碼以環境變數形式出現在 Cloud Run 服務設定裡時，可改把密碼放 Secret Manager（`gcloud secrets create` + 授權執行身分 `roles/secretmanager.secretAccessor`），workflow 改用 `secrets:` 參數掛載，詳見 `cloudsql/README.md`。
 
 ### 階段 4：部署授權（每個專案一次 + 每個 repo 一次）
 
@@ -67,16 +64,15 @@ cd ../cloudrun
 ./wif.sh --vpc default generate_github_workflow main   # 或 tag（推 v* tag 才部署）
 ```
 
-打開產生的 `deploy.yaml`，把註解掉的 `env_vars` / `secrets` 區塊打開填上：
+打開產生的 `deploy.yaml`，把註解掉的 `env_vars` 區塊打開——值直接引用階段 3 設定好的 GitHub Secrets，不用手填：
 
 ```yaml
         env_vars: |
-          DB_HOST=10.x.x.x        # 階段 2 .env 裡的私有 IP
-          DB_PORT=5432
-          DB_NAME=my_app_db
-          DB_USER=app_user
-        secrets: |
-          DB_PASSWORD=db-password:latest
+          DB_HOST=${{ secrets.DB_HOST }}
+          DB_PORT=${{ secrets.DB_PORT }}
+          DB_NAME=${{ secrets.DB_NAME }}
+          DB_USER=${{ secrets.DB_USER }}
+          DB_PASSWORD=${{ secrets.DB_PASSWORD }}
 ```
 
 放進目標 repo 後推上去：
@@ -123,4 +119,5 @@ cd gcp/cloudrun
 
 - Cloud SQL 實例是**持續計費**資源，測試完記得 `./sql.sh delete`
 - private IP 模式下，本機與 CI 連不到資料庫（migration 建議做成 Cloud Run job），詳見 `cloudsql/README.md`
-- `.env` 含明文密碼，不要 commit；密碼已進 Secret Manager 後，本機的 `.env` 用完即可刪
+- `.env` 與 `generate_github_secrets` 的輸出都含明文密碼，不要 commit；連線資訊進 GitHub Secrets 後即可刪除
+- GitHub Secrets 路線的機密最終會成為 Cloud Run 的**環境變數**（能查看服務設定的人看得到）；需要更嚴格的隔離與稽核時改用 Secret Manager（見階段 3 的替代方案）

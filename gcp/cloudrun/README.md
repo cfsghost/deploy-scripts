@@ -62,6 +62,8 @@
 
 `SERVICE_NAME` 不用設定——workflow 會自動取 GitHub repo 名稱（轉小寫、底線和點轉連字號）作為 Cloud Run 服務名稱。
 
+服務需要環境變數（如資料庫連線資訊）時，打開 deploy.yaml 內註解掉的 `env_vars` 區塊，值可引用 GitHub Secrets（`${{ secrets.DB_HOST }}` 等）；搭配 Cloud SQL 時可用 `../cloudsql/sql.sh generate_github_secrets <owner>/<repo>` 一次把整組連線資訊設定進 repo 的 Secrets。
+
 ### Step 4：推送觸發部署
 
 ```bash

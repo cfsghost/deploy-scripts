@@ -8,6 +8,8 @@
 #   ./sql.sh delete [實例名稱]            刪除 Cloud SQL 實例（需輸入實例名稱確認）
 #   ./sql.sh create_database <db名稱>     在實例中建立資料庫
 #   ./sql.sh create_user <帳號> [db名稱]  建立帳號並自動產生密碼，輸出 .env 格式連線資訊
+#   ./sql.sh generate_github_secrets <owner/repo> [.env檔]
+#                                         把 .env 連線資訊轉成 gh secret set 命令（GitHub Secrets）
 
 set -eo pipefail
 
@@ -35,6 +37,10 @@ usage() {
   create_database <db名稱>      在實例中建立資料庫
   create_user <帳號> [db名稱]   建立帳號並自動產生隨機密碼，輸出 .env 格式連線資訊
                                 （狀態訊息走 stderr，stdout 可直接重新導向存檔）
+  generate_github_secrets <owner/repo> [.env檔]
+                                把 .env 裡的連線資訊轉成一串 gh secret set 命令，
+                                在已登入 gh CLI 的機器上執行即可全部放進 GitHub Secrets
+                                （預設讀取 ./.env）
 
 選項:
   -p, --project <id>     指定 GCP 專案 ID（預設: $SQL_PROJECT_ID 或 gcloud config 目前專案）
@@ -56,6 +62,7 @@ usage() {
   ./sql.sh --private create
   ./sql.sh create_database my_app_db
   ./sql.sh create_user app_user my_app_db > .env
+  ./sql.sh generate_github_secrets fred/go-api
   ./sql.sh -i staging-pg delete
 EOF
 }
@@ -241,6 +248,56 @@ EOF
 }
 
 # ==========================================
+# 🔐 generate_github_secrets - 把 .env 轉成 gh secret set 命令
+# ==========================================
+cmd_generate_github_secrets() {
+    local repo="$1"
+    local env_file="${2:-.env}"
+
+    echo "${repo}" | grep -Eq '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$' \
+        || die "repo 格式錯誤，需為 <owner>/<repo>，例如: fred/go-api"
+    if [ ! -f "${env_file}" ]; then
+        die "找不到 '${env_file}'，請先執行 './sql.sh create_user <帳號> <db名稱> > .env' 產生連線資訊。"
+    fi
+
+    # 狀態訊息走 stderr，stdout 可直接重新導向存成 script
+    echo "⏳ 讀取 '${env_file}'，產生 gh secret set 命令..." >&2
+
+    local count=0 line key value escaped
+    echo "# 在已登入 GitHub CLI 的機器上執行（未登入請先跑: gh auth login）"
+    echo "# 目標 repo: ${repo}"
+    while IFS= read -r line; do
+        # 跳過註解與空行
+        case "${line}" in
+            \#*|"") continue ;;
+        esac
+        key="${line%%=*}"
+        value="${line#*=}"
+        echo "${key}" | grep -Eq '^[A-Za-z_][A-Za-z0-9_]*$' || continue
+        if [ -z "${value}" ]; then
+            echo "⚠️  '${key}' 的值是空的，已跳過（請補齊 ${env_file} 後重新產生）。" >&2
+            continue
+        fi
+        # 單引號包住值，值裡的單引號以 '\'' 逸出
+        escaped=$(printf '%s' "${value}" | sed "s/'/'\\\\''/g")
+        printf "gh secret set %s --repo '%s' --body '%s'\n" "${key}" "${repo}" "${escaped}"
+        count=$((count + 1))
+    done < "${env_file}"
+
+    [ "${count}" -gt 0 ] || die "'${env_file}' 裡沒有任何 KEY=VALUE 連線資訊。"
+
+    ok "已產生 ${count} 條 gh 命令。" >&2
+    {
+        echo ""
+        echo "接下來："
+        echo "   1. 複製以上命令到已登入 gh CLI 的機器執行（或 '> set-secrets.sh' 存檔帶走）"
+        echo "   2. deploy.yaml 的 env_vars 以 \${{ secrets.DB_HOST }} 等方式引用"
+        echo "      （wif.sh generate_github_workflow 產生的註解範例已寫好，打開即可）"
+        echo "   ⚠️  以上命令含明文密碼，執行完請刪除，不要 commit 進版控。"
+    } >&2
+}
+
+# ==========================================
 # 🎬 主程式
 # ==========================================
 ARGS=()
@@ -295,6 +352,10 @@ case "${COMMAND}" in
     create_user)
         [ -n "${ARGS[1]:-}" ] || die "請指定帳號名稱，例如: ./sql.sh create_user app_user my_app_db"
         cmd_create_user "${ARGS[1]}" "${ARGS[2]:-}"
+        ;;
+    generate_github_secrets)
+        [ -n "${ARGS[1]:-}" ] || die "請指定 GitHub repo，例如: ./sql.sh generate_github_secrets fred/go-api"
+        cmd_generate_github_secrets "${ARGS[1]}" "${ARGS[2]:-}"
         ;;
     help)
         usage
