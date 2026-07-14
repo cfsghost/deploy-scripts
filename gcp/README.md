@@ -96,16 +96,19 @@ gcloud run services list --region asia-east1    # 取得服務網址
 
 ### 階段 6（選用）：自訂網域與前後端分流
 
-前後端各是一個 Cloud Run 服務、想用一個網域對外時，用 LB 做路徑分流（`/api/*` → backend，其餘 → frontend）：
+想用自己的網域對外、並把前後端分流到不同 Cloud Run 服務時，用 LB 掛網域、設規則：
 
 ```bash
 cd ../lb
-./lb.sh setup app.example.com --frontend my-frontend --backend my-backend
+./lb.sh init                                          # 靜態 IP + HTTP→HTTPS 轉址（一次）
+./lb.sh add_domain app.example.com                    # 掛網域（憑證）
+./lb.sh add_rule app.example.com / my-frontend        # 網域預設服務
+./lb.sh add_rule app.example.com '/api/*' my-backend  # API 路徑分流
 # 照輸出指示設定 DNS A 記錄，憑證簽發進度用 ./lb.sh check 追蹤
 ./lb.sh lock my-frontend && ./lb.sh lock my-backend   # 建議：關閉 run.app 直連
 ```
 
-單一服務只想掛網域也適用（不加 `--backend` 即可），詳見 `lb/README.md`。
+可掛多個網域（共用同一個 IP），每個網域各自設定規則，詳見 `lb/README.md`。
 
 ## 精簡流程（不需要資料庫）
 
