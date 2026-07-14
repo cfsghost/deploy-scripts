@@ -55,7 +55,8 @@ cd ../cloudsql
 
 ```bash
 cd ../cloudrun
-./wif.sh init                       # AR 倉庫、部署 SA、WIF 信任鏈（每個專案一次）
+./wif.sh init <owner>               # AR 倉庫、部署 SA、WIF 信任鏈（每個專案一次）
+                                    # <owner> 是你的 GitHub 帳號/組織，provider 只信任它底下的 repo
 ./wif.sh add <owner>/<repo>         # 授權 GitHub repo（每個 repo 一次）
 ```
 
@@ -116,7 +117,7 @@ cd ../lb
 
 ```bash
 cd gcp/cloudrun
-./wif.sh init
+./wif.sh init <owner>
 ./wif.sh add <owner>/<repo>
 ./wif.sh generate_github_workflow main
 # deploy.yaml 放進 repo 的 .github/workflows/，push 即部署

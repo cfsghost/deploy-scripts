@@ -58,7 +58,9 @@ usage() {
 用法: wif.sh [-p <project-id>] <指令>
 
 指令:
-  init                 初始化 GCP 環境（啟用 API、建立 Artifact Registry / SA / WIF Pool / Provider）
+  init <github-owner>  初始化 GCP 環境（啟用 API、建立 Artifact Registry / SA / WIF Pool / Provider）
+                       github-owner 為你的 GitHub 帳號或組織，provider 會限定
+                       只有該 owner 底下的 repo 能換取部署憑證
   check                檢查環境設定與帳號權限是否就緒
   list                 列出目前已授權部署的 GitHub repos
   add <owner/repo>     授權新的 GitHub repo 透過 WIF 部署
@@ -81,7 +83,7 @@ usage() {
   WIF_SUFFIX           元件命名後綴（預設: go-run，需與初始化時一致）
 
 範例:
-  ./wif.sh -p my-project init
+  ./wif.sh -p my-project init fred
   ./wif.sh add fred/go-api
   ./wif.sh list
   ./wif.sh generate_github_workflow tag
@@ -215,9 +217,13 @@ EOF
 # 🚀 init - 初始化 GCP 環境
 # ==========================================
 cmd_init() {
+    local gh_owner="$1"
+    [[ "${gh_owner}" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$ ]] \
+        || die "GitHub owner 格式錯誤（帳號或組織名稱），例如: ./wif.sh init fred"
+
     require_login
     resolve_project
-    echo "🚀 開始初始化專案 '${PROJECT_ID}' 的 WIF 部署環境"
+    echo "🚀 開始初始化專案 '${PROJECT_ID}' 的 WIF 部署環境（GitHub owner: ${gh_owner}）"
     resolve_project_number
 
     echo "[1/5] 權限預檢..."
@@ -281,14 +287,17 @@ cmd_init() {
     fi
 
     if gcloud iam workload-identity-pools providers describe "${PROVIDER_NAME}" --location="global" --workload-identity-pool="${POOL_NAME}" --project="${PROJECT_ID}" &>/dev/null; then
-        info "Identity Provider '${PROVIDER_NAME}' 已存在。"
+        info "Identity Provider '${PROVIDER_NAME}' 已存在（維持原本的 GitHub owner 限制）。"
     else
+        # attribute-condition 是 GCP 的強制要求：限定只有此 GitHub owner 底下的
+        # repo 能透過這個 provider 換取憑證（實際能部署的 repo 仍由 add 逐一授權）
         gcloud iam workload-identity-pools providers create-oidc "${PROVIDER_NAME}" \
             --location="global" \
             --workload-identity-pool="${POOL_NAME}" \
             --project="${PROJECT_ID}" \
             --display-name="GitHub Provider" \
-            --attribute-mapping="google.subject=assertion.subject,attribute.repository=assertion.repository" \
+            --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.repository_owner=assertion.repository_owner" \
+            --attribute-condition="assertion.repository_owner == '${gh_owner}'" \
             --issuer-uri="https://token.actions.githubusercontent.com"
     fi
 
@@ -404,6 +413,17 @@ cmd_add() {
     require_sa
     resolve_project_number
     require_permissions "${BIND_PERMISSIONS[@]}"
+
+    # provider 建立時限定了 repository_owner，owner 不符的 repo 綁了也換不到憑證
+    local owner condition
+    owner="${repo%%/*}"
+    condition=$(gcloud iam workload-identity-pools providers describe "${PROVIDER_NAME}" \
+        --location="global" --workload-identity-pool="${POOL_NAME}" --project="${PROJECT_ID}" \
+        --format="value(attributeCondition)" 2>/dev/null || true)
+    if [ -n "${condition}" ] && ! echo "${condition}" | grep -q "'${owner}'"; then
+        echo "⚠️  provider 目前限定 ${condition}，repo '${repo}' 的 owner 不在其中，部署時將無法換取憑證。" >&2
+        echo "   如需允許，請更新 provider 條件（gcloud iam workload-identity-pools providers update-oidc ... --attribute-condition）。" >&2
+    fi
 
     gcloud iam service-accounts add-iam-policy-binding "${SA_EMAIL}" \
         --project="${PROJECT_ID}" \
@@ -635,7 +655,10 @@ done
 
 COMMAND="${ARGS[0]:-}"
 case "${COMMAND}" in
-    init)   cmd_init ;;
+    init)
+        [ -n "${ARGS[1]:-}" ] || die "請指定 GitHub owner（帳號或組織），例如: ./wif.sh init fred"
+        cmd_init "${ARGS[1]}"
+        ;;
     check)  cmd_check ;;
     list)   cmd_list ;;
     add)

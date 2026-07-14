@@ -23,13 +23,13 @@
 在 Cloud Shell 取得本目錄的 `wif.sh`（git clone 本 repo 或直接上傳檔案），然後執行：
 
 ```bash
-./wif.sh init
+./wif.sh init <github-owner>      # 例如: ./wif.sh init fred
 ```
 
-專案 ID 預設取自 gcloud 目前設定的專案；要指定其他專案時加 `-p`：
+`<github-owner>` 是你的 GitHub 帳號或組織名稱——WIF Provider 會限定只有該 owner 底下的 repo 能換取部署憑證（GCP 的強制安全要求）。專案 ID 預設取自 gcloud 目前設定的專案；要指定其他專案時加 `-p`：
 
 ```bash
-./wif.sh -p my-gcp-project init
+./wif.sh -p my-gcp-project init fred
 ```
 
 `init` 會依序完成（冪等，重跑不會出錯）：
@@ -84,7 +84,7 @@ gcloud run services list --region asia-east1
 ## wif.sh 指令一覽
 
 ```
-./wif.sh init                初始化 GCP 環境（每個專案一次）
+./wif.sh init <github-owner> 初始化 GCP 環境（每個專案一次），限定該 GitHub 帳號/組織
 ./wif.sh check               逐項檢查環境與帳號權限是否就緒
 ./wif.sh list                列出目前已授權部署的 GitHub repos
 ./wif.sh add <owner/repo>    授權新的 GitHub repo
