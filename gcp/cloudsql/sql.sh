@@ -17,7 +17,7 @@ set -eo pipefail
 # 🔧 全域設定（可用環境變數覆寫）
 # ==========================================
 REGION="${SQL_REGION:-asia-east1}"              # 台灣彰化機房
-DB_VERSION="${SQL_DB_VERSION:-POSTGRES_15}"
+DB_VERSION="${SQL_DB_VERSION:-POSTGRES_18}"
 INSTANCE_NAME="${SQL_INSTANCE:-prod-pg-lite}"
 NETWORK="${SQL_NETWORK:-default}"               # --private 模式使用的 VPC
 PROJECT_ID="${SQL_PROJECT_ID:-}"
@@ -54,7 +54,7 @@ usage() {
   SQL_PROJECT_ID    預設專案 ID
   SQL_INSTANCE      預設實例名稱（預設: prod-pg-lite）
   SQL_REGION        區域（預設: asia-east1）
-  SQL_DB_VERSION    資料庫版本（預設: POSTGRES_15）
+  SQL_DB_VERSION    資料庫版本（預設: POSTGRES_18）
   SQL_NETWORK       --private 模式的預設 VPC（預設: default）
 
 範例:

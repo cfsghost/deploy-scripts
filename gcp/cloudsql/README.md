@@ -60,7 +60,7 @@ CLOUD_SQL_CONNECTION_NAME=<project>:<region>:<instance>
 | `SQL_PROJECT_ID` | 預設專案 ID |
 | `SQL_INSTANCE` | 預設實例名稱，預設 `prod-pg-lite` |
 | `SQL_REGION` | 區域，預設 `asia-east1` |
-| `SQL_DB_VERSION` | 資料庫版本，預設 `POSTGRES_15` |
+| `SQL_DB_VERSION` | 資料庫版本，預設 `POSTGRES_18` |
 | `SQL_NETWORK` | `--private` 模式的預設 VPC，預設 `default` |
 
 ## 連線方式
