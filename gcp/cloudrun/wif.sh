@@ -93,6 +93,21 @@ die() { echo "❌ 錯誤: $*" >&2; exit 1; }
 info() { echo "ℹ️  $*"; }
 ok() { echo "✅ $*"; }
 
+# 新建的 Service Account 在 IAM 各服務間同步需要幾秒到幾十秒，
+# 綁定太快會回 "does not exist"，失敗時等待後重試
+retry_iam() {
+    local n=0 max=6 err
+    until err=$("$@" 2>&1 >/dev/null); do
+        n=$((n + 1))
+        if [ "${n}" -ge "${max}" ]; then
+            echo "${err}" >&2
+            return 1
+        fi
+        info "IAM 尚未同步到新建的 Service Account，10 秒後重試（${n}/$((max - 1))）..."
+        sleep 10
+    done
+}
+
 require_login() {
     if ! gcloud auth list --filter=status=ACTIVE --format="value(account)" | grep -q .; then
         die "gcloud 未登入，請先執行 'gcloud auth login'。"
@@ -236,24 +251,24 @@ cmd_init() {
             --project="${PROJECT_ID}"
     fi
 
-    gcloud artifacts repositories add-iam-policy-binding "${AR_REPO}" \
+    retry_iam gcloud artifacts repositories add-iam-policy-binding "${AR_REPO}" \
         --location="${REGION}" \
         --project="${PROJECT_ID}" \
         --member="serviceAccount:${SA_EMAIL}" \
         --role="roles/artifactregistry.writer" \
-        --quiet >/dev/null
+        --quiet
 
     # 使用 run.admin 而非 run.developer：deploy.yaml 的 --allow-unauthenticated
     # 需要 run.services.setIamPolicy 權限，run.developer 沒有
-    gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+    retry_iam gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
         --member="serviceAccount:${SA_EMAIL}" \
         --role="roles/run.admin" \
-        --quiet >/dev/null
+        --quiet
 
-    gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+    retry_iam gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
         --member="serviceAccount:${SA_EMAIL}" \
         --role="roles/iam.serviceAccountUser" \
-        --quiet >/dev/null
+        --quiet
 
     echo "[5/5] 建立 WIF Pool 與 Provider..."
     if gcloud iam workload-identity-pools describe "${POOL_NAME}" --location="global" --project="${PROJECT_ID}" &>/dev/null; then
