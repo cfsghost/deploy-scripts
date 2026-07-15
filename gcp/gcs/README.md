@@ -22,6 +22,15 @@
 
 到這裡，後端用**原生 GCS SDK** 就能存取了——Cloud Run 上的 Application Default Credentials 會自動生效，不需要任何金鑰，程式裡只要知道 bucket 名稱。
 
+> **服務還沒部署？** 把服務名稱換成執行身分的 **SA email**（帶 `@` 就會被視為 SA），部署前就能先開好權限；`create_hmac` 同理。未自訂執行身分的服務用專案預設 compute SA：
+>
+> ```bash
+> PN=$(gcloud projects describe <專案ID> --format="value(projectNumber)")
+> ./gcs.sh grant "${PN}-compute@developer.gserviceaccount.com" my-app-uploads
+> ```
+>
+> 或者什麼都不用做，等第一次部署完成後再 `grant`，服務不需重新部署即生效。詳見常見問題。
+
 ### 後端用 AWS S3 SDK / MinIO client 的話
 
 再多一步，產生 S3 相容的 HMAC 金鑰：
