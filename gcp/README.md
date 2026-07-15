@@ -124,12 +124,12 @@ cd ../gcs
 ./gcs.sh generate_github_secrets <owner>/<repo>           # 轉進 GitHub Secrets
 ```
 
-> **服務還沒部署？** `grant` / `create_hmac` 用服務名稱時需要該服務已完成第一次部署（階段 5）。想在部署前就把權限與金鑰準備好——例如讓首次部署就帶到 storage 環境變數——把服務名稱換成執行身分的 **SA email** 即可。走本流程部署的服務用的是專案預設 compute SA：
+> **服務還沒部署？** `grant` / `create_hmac` 用服務名稱時需要該服務已完成第一次部署（階段 5）。想在部署前就把權限與金鑰準備好——例如讓首次部署就帶到 storage 環境變數——把服務名稱直接換成執行身分的 **SA email**（參數帶 `@` 就會被視為 SA）。走本流程部署的服務用的是專案預設 compute SA：
 >
 > ```bash
-> PN=$(gcloud projects describe <專案ID> --format="value(projectNumber)")
-> ./gcs.sh grant "${PN}-compute@developer.gserviceaccount.com" my-app-uploads
-> ./gcs.sh create_hmac "${PN}-compute@developer.gserviceaccount.com" my-app-uploads > .env.storage
+> ./gcs.sh grant <專案編號>-compute@developer.gserviceaccount.com my-app-uploads
+> ./gcs.sh create_hmac <專案編號>-compute@developer.gserviceaccount.com my-app-uploads > .env.storage
+> # <專案編號>查法: gcloud projects describe <專案ID> --format="value(projectNumber)"
 > ```
 
 另有**公開檔案**（靜態資源、公開下載檔）要放時，另建一個公開 bucket，不要與私人上傳混桶；可搭配階段 6 的 LB 掛自訂網域 + CDN：
