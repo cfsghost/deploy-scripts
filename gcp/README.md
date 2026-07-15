@@ -8,7 +8,7 @@
 |---|---|---|
 | `network/` | `network.sh` | VPC 私有服務連線（Cloud SQL private IP 的前置設定） |
 | `cloudsql/` | `sql.sh` | Cloud SQL PostgreSQL 實例、資料庫、帳號 |
-| `cloudrun/` | `wif.sh` | WIF 免金鑰部署授權、GitHub Actions workflow 產生 |
+| `cloudrun/` | `wif.sh`、`public.sh` | WIF 免金鑰部署授權、GitHub Actions workflow 產生；服務公開存取管理 |
 | `lb/` | `lb.sh` | 自訂網域 HTTPS LB，按路徑分流到前後端 Cloud Run 服務 |
 | `gcs/` | `gcs.sh` | 上傳檔案的物件儲存（GCS bucket，支援 S3 相容 API） |
 
@@ -94,6 +94,12 @@ git push origin main          # 觸發第一次部署
 
 ```bash
 gcloud run services list --region asia-east1    # 取得服務網址
+```
+
+打開網址若出現 **`Error: Forbidden`**，代表 `--allow-unauthenticated` 被組織政策擋下（secure by default 的組織會禁止授權 `allUsers`），用 `public.sh` 開放即可：
+
+```bash
+./public.sh open <服務名稱>    # 被組織政策擋下時自動改用 --no-invoker-iam-check
 ```
 
 ### 階段 6（選用）：自訂網域與前後端分流

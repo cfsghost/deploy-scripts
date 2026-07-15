@@ -7,6 +7,7 @@
 | 檔案 | 用途 |
 |---|---|
 | `wif.sh` | WIF 管理工具：初始化 GCP 環境、授權/移除 GitHub repo、檢查環境狀態、產生 GitHub Actions workflow |
+| `public.sh` | 服務公開存取管理：部署後開放/關閉未驗證存取、查看目前狀態（403 Forbidden 的解法） |
 
 ## 前置需求
 
@@ -81,6 +82,16 @@ git push origin v1.0.0
 gcloud run services list --region asia-east1
 ```
 
+### Step 5：確認服務可公開存取
+
+打開服務網址，若出現 **`Error: Forbidden`** 代表服務還沒開放未驗證存取——workflow 雖然帶了 `--allow-unauthenticated`，但在開啟「secure by default」的組織裡會被組織政策（`constraints/iam.allowedPolicyMemberDomains`）擋下而默默失效。用 `public.sh` 開放：
+
+```bash
+./public.sh open <服務名稱>
+```
+
+它會先用標準做法授權 `allUsers` 呼叫；被組織政策擋下時自動改用 `--no-invoker-iam-check`（關閉 invoker IAM 檢查，效果相同且不受該政策影響）。內部服務**不要**執行這步，維持 IAM 驗證。
+
 ## wif.sh 指令一覽
 
 ```
@@ -93,6 +104,16 @@ gcloud run services list --region asia-east1
 ./wif.sh generate_github_workflow <main|tag> [檔案]
                              產生已填好 env 的 GitHub Actions deploy.yaml（預設輸出到 ./deploy.yaml）
 ```
+
+## public.sh 指令一覽
+
+```
+./public.sh open <服務>      開放公開存取（任何人不需登入即可呼叫）
+./public.sh close <服務>     關閉公開存取（恢復 IAM 驗證）
+./public.sh status <服務>    查看目前公開狀態
+```
+
+選項：`-p <project-id>` 指定專案、`-r <區域>` 指定區域（預設 `asia-east1`，或以 `RUN_PROJECT_ID` / `RUN_REGION` 環境變數覆寫）。
 
 服務需要連 **private IP 的 Cloud SQL** 時，產生 workflow 時加 `--vpc`，部署設定會多出 VPC egress 相關 flags：
 
@@ -113,6 +134,7 @@ gcloud run services list --region asia-east1
 
 ## 常見問題
 
+- **部署成功但打開網址出現 `Error: Forbidden`**：服務未開放未驗證存取（`--allow-unauthenticated` 可能被組織政策擋下而默默失效），執行 `./public.sh open <服務>` 開放，詳見 Step 5。
 - **`init` 被權限預檢擋下**：把輸出列出的角色清單交給專案管理員授權，或請管理員代跑 `init`（之後的 `add`/`remove` 只需要能修改 Service Account IAM 的權限）。
 - **部署失敗在 docker build**：確認 repo 根目錄有 `Dockerfile`。
 - **同一個 GCP 專案部署多個 repo**：`init` 跑一次即可，每個 repo 各跑一次 `./wif.sh add`，共用同一組 Artifact Registry / SA / WIF。
