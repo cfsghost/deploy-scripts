@@ -118,19 +118,19 @@ cd ../lb
 
 ```bash
 cd ../gcs
-./gcs.sh create                                 # 建立 bucket（封鎖公開存取）
-./gcs.sh grant my-backend                       # 原生 GCS SDK 走 ADC，免金鑰
-./gcs.sh create_hmac my-backend > .env.storage       # 後端用 AWS S3 SDK 時才需要
-./gcs.sh generate_github_secrets <owner>/<repo>      # 轉進 GitHub Secrets
+./gcs.sh create my-app-uploads                            # 建立 bucket（封鎖公開存取）
+./gcs.sh grant my-backend my-app-uploads                  # 原生 GCS SDK 走 ADC，免金鑰
+./gcs.sh create_hmac my-backend my-app-uploads > .env.storage   # 後端用 AWS S3 SDK 時才需要
+./gcs.sh generate_github_secrets <owner>/<repo>           # 轉進 GitHub Secrets
 ```
 
 另有**公開檔案**（靜態資源、公開下載檔）要放時，另建一個公開 bucket，不要與私人上傳混桶；可搭配階段 6 的 LB 掛自訂網域 + CDN：
 
 ```bash
-./gcs.sh create --public                                  # 建立 <專案ID>-public（整桶公開讀取）
+./gcs.sh create --public my-app-public                    # 建立公開 bucket（整桶公開讀取）
 cd ../lb
 ./lb.sh add_domain files.example.com
-./lb.sh add_rule files.example.com / --bucket <專案ID>-public
+./lb.sh add_rule files.example.com / --bucket my-app-public
 ```
 
 詳見 `gcs/README.md`（雙 bucket 架構）與 `lb/README.md`（掛 GCS bucket）。

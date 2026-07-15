@@ -3,15 +3,16 @@
 # gcs.sh - GCP Cloud Storage 管理工具（應用程式上傳檔案用的物件儲存）
 #
 # 用法:
-#   ./gcs.sh create [bucket名稱]           建立 bucket（不開公開存取，預設名稱: <專案ID>-uploads）
-#   ./gcs.sh create --public [bucket名稱]  建立公開讀取的 bucket（預設名稱: <專案ID>-public）
-#   ./gcs.sh grant <Cloud Run服務> [bucket] 授權服務的執行身分讀寫 bucket（原生 GCS SDK 免金鑰）
-#   ./gcs.sh create_hmac <Cloud Run服務>    產生 S3 相容 HMAC 金鑰，輸出 .env 格式連線資訊
-#   ./gcs.sh cors <來源> [bucket]           設定 CORS（瀏覽器直傳 presigned URL 用）
+#   ./gcs.sh create <bucket名稱>            建立 bucket（不開公開存取）
+#   ./gcs.sh create --public <bucket名稱>   建立公開讀取的 bucket
+#   ./gcs.sh grant <Cloud Run服務> <bucket> 授權服務的執行身分讀寫 bucket（原生 GCS SDK 免金鑰）
+#   ./gcs.sh create_hmac <Cloud Run服務> <bucket>
+#                                          產生 S3 相容 HMAC 金鑰，輸出 .env 格式連線資訊
+#   ./gcs.sh cors <來源> <bucket>           設定 CORS（瀏覽器直傳 presigned URL 用）
 #   ./gcs.sh generate_github_secrets <owner/repo> [env檔]
 #                                          把 .env.storage 轉成 gh secret set 命令
 #   ./gcs.sh list                          列出專案內的 buckets
-#   ./gcs.sh delete [bucket名稱]           刪除 bucket 及其中所有檔案（需輸入名稱確認）
+#   ./gcs.sh delete <bucket名稱>            刪除 bucket 及其中所有檔案（需輸入名稱確認）
 
 set -eo pipefail
 
@@ -19,7 +20,7 @@ set -eo pipefail
 # 🔧 全域設定（可用環境變數覆寫）
 # ==========================================
 REGION="${GCS_REGION:-asia-east1}"     # 台灣彰化機房
-BUCKET="${GCS_BUCKET:-}"               # 空值時預設為 <專案ID>-uploads（--public 時 <專案ID>-public）
+BUCKET="${GCS_BUCKET:-}"               # 各指令以位置參數或 -b 指定，不提供預設名稱
 PROJECT_ID="${GCS_PROJECT_ID:-}"
 PUBLIC_MODE=""                         # create --public：建立公開讀取的 bucket
 
@@ -31,26 +32,27 @@ usage() {
 用法: gcs.sh [選項] <指令>
 
 指令:
-  create [bucket名稱]            建立 bucket（uniform 權限、強制封鎖公開存取）
-  create --public [bucket名稱]   建立【公開讀取】的 bucket（整桶任何人可讀！）
-                                 放網站靜態資源、公開下載檔用；預設名稱 <專案ID>-public
+  create <bucket名稱>            建立 bucket（uniform 權限、強制封鎖公開存取）
+  create --public <bucket名稱>   建立【公開讀取】的 bucket（整桶任何人可讀！）
+                                 放網站靜態資源、公開下載檔用
                                  可再用 ../lb/lb.sh add_rule 掛自訂網域 + CDN
-  grant <Cloud Run服務> [bucket] 授權服務的執行身分讀寫 bucket
+  grant <Cloud Run服務> <bucket> 授權服務的執行身分讀寫 bucket
                                  （服務用原生 GCS SDK 時做到這步即可，免金鑰）
-  create_hmac <Cloud Run服務>    為服務的執行身分產生 S3 相容 HMAC 金鑰，
+  create_hmac <Cloud Run服務> <bucket>
+                                 為服務的執行身分產生 S3 相容 HMAC 金鑰，
                                  輸出 .env 格式（狀態訊息走 stderr，stdout 可直接存檔）
                                  服務用 AWS S3 SDK / MinIO client 時才需要
-  cors <來源> [bucket]           設定 CORS，允許瀏覽器從指定來源直傳
+  cors <來源> <bucket>           設定 CORS，允許瀏覽器從指定來源直傳
                                  （多個來源用逗號分隔，例如 https://app.example.com）
   generate_github_secrets <owner/repo> [env檔]
                                  把 create_hmac 的輸出（預設 ./.env.storage）轉成
                                  一串 gh secret set 命令，放進 repo 的 Actions Secrets
   list                           列出專案內的 buckets
-  delete [bucket名稱]            刪除 bucket 及其中所有檔案（需輸入名稱確認）
+  delete <bucket名稱>            刪除 bucket 及其中所有檔案（需輸入名稱確認）
 
 選項:
   -p, --project <id>   指定 GCP 專案 ID（預設: $GCS_PROJECT_ID 或 gcloud config 目前專案）
-  -b, --bucket <名稱>  指定 bucket 名稱（預設: $GCS_BUCKET 或 <專案ID>-uploads）
+  -b, --bucket <名稱>  指定 bucket 名稱（等同各指令的 bucket 位置參數）
   --public             create 專用：bucket 開放公開讀取
   --region <區域>      bucket 所在區域（預設: asia-east1）
   -h, --help           顯示此說明
@@ -61,13 +63,12 @@ usage() {
   GCS_REGION       區域（預設: asia-east1）
 
 範例:
-  ./gcs.sh create
-  ./gcs.sh grant my-backend
-  ./gcs.sh create_hmac my-backend > .env.storage
+  ./gcs.sh create my-app-uploads
+  ./gcs.sh grant my-backend my-app-uploads
+  ./gcs.sh create_hmac my-backend my-app-uploads > .env.storage
   ./gcs.sh generate_github_secrets fred/go-api
-  ./gcs.sh cors https://app.example.com
-  ./gcs.sh create --public          # 公開 bucket（靜態資源/公開下載）
-  ./gcs.sh -b my-app-assets create
+  ./gcs.sh cors https://app.example.com my-app-uploads
+  ./gcs.sh create --public my-app-assets   # 公開 bucket（靜態資源/公開下載）
 EOF
 }
 
@@ -91,18 +92,13 @@ resolve_project() {
 }
 
 resolve_bucket() {
-    if [ -z "${BUCKET}" ]; then
-        if [ -n "${PUBLIC_MODE}" ]; then
-            BUCKET="${PROJECT_ID}-public"
-        else
-            BUCKET="${PROJECT_ID}-uploads"
-        fi
-    fi
+    [ -n "${BUCKET}" ] || die "未指定 bucket 名稱，請以位置參數或 '-b <名稱>' 指定（bucket 名稱是全球唯一的，建議加上專案前綴，例如 ${PROJECT_ID}-uploads）。"
+    echo "${BUCKET}" | grep -Eq '^[a-z0-9][a-z0-9._-]*$' || die "bucket 名稱格式錯誤: '${BUCKET}'（小寫字母、數字、-、_、.）"
 }
 
 require_bucket() {
     gcloud storage buckets describe "gs://${BUCKET}" --project="${PROJECT_ID}" &>/dev/null \
-        || die "找不到 bucket '${BUCKET}'，請先執行 './gcs.sh create'。"
+        || die "找不到 bucket '${BUCKET}'，請先執行 './gcs.sh create ${BUCKET}'。"
 }
 
 # 取得 Cloud Run 服務的執行身分（未自訂時為專案預設 compute SA）
@@ -169,16 +165,16 @@ cmd_create() {
         echo ""
         echo "接下來："
         echo "   檔案直接用 https://storage.googleapis.com/${BUCKET}/<路徑> 存取"
-        echo "   ./gcs.sh grant <Cloud Run服務> ${BUCKET}   授權後端寫入這個 bucket"
+        echo "   ./gcs.sh grant <Cloud Run服務> ${BUCKET}    授權後端寫入這個 bucket"
         echo "   想掛自訂網域 + CDN："
         echo "   ../lb/lb.sh add_domain files.example.com"
         echo "   ../lb/lb.sh add_rule files.example.com / --bucket ${BUCKET}"
     else
         echo ""
         echo "接下來："
-        echo "   ./gcs.sh grant <Cloud Run服務>        授權服務讀寫（原生 GCS SDK 免金鑰）"
-        echo "   ./gcs.sh create_hmac <Cloud Run服務>  服務用 S3 SDK 時，產生相容金鑰"
-        echo "   ./gcs.sh cors <來源>                  需要瀏覽器直傳時設定 CORS"
+        echo "   ./gcs.sh grant <Cloud Run服務> ${BUCKET}        授權服務讀寫（原生 GCS SDK 免金鑰）"
+        echo "   ./gcs.sh create_hmac <Cloud Run服務> ${BUCKET}  服務用 S3 SDK 時，產生相容金鑰"
+        echo "   ./gcs.sh cors <來源> ${BUCKET}                  需要瀏覽器直傳時設定 CORS"
     fi
 }
 
@@ -187,6 +183,7 @@ cmd_create() {
 # ==========================================
 cmd_grant() {
     local svc="$1"
+    [ -n "${2:-}" ] && BUCKET="$2"
     require_login
     resolve_project
     resolve_bucket
@@ -211,6 +208,7 @@ cmd_grant() {
 # ==========================================
 cmd_create_hmac() {
     local svc="$1"
+    [ -n "${2:-}" ] && BUCKET="$2"
     require_login
     resolve_project
     resolve_bucket
@@ -250,6 +248,7 @@ EOF
 # ==========================================
 cmd_cors() {
     local origins="$1"
+    [ -n "${2:-}" ] && BUCKET="$2"
     require_login
     resolve_project
     resolve_bucket
@@ -406,16 +405,16 @@ COMMAND="${ARGS[0]:-}"
 case "${COMMAND}" in
     create) cmd_create "${ARGS[1]:-}" ;;
     grant)
-        [ -n "${ARGS[1]:-}" ] || die "請指定 Cloud Run 服務名稱，例如: ./gcs.sh grant my-backend"
-        cmd_grant "${ARGS[1]}"
+        [ -n "${ARGS[1]:-}" ] || die "請指定 Cloud Run 服務名稱，例如: ./gcs.sh grant my-backend my-app-uploads"
+        cmd_grant "${ARGS[1]}" "${ARGS[2]:-}"
         ;;
     create_hmac)
-        [ -n "${ARGS[1]:-}" ] || die "請指定 Cloud Run 服務名稱，例如: ./gcs.sh create_hmac my-backend"
-        cmd_create_hmac "${ARGS[1]}"
+        [ -n "${ARGS[1]:-}" ] || die "請指定 Cloud Run 服務名稱，例如: ./gcs.sh create_hmac my-backend my-app-uploads"
+        cmd_create_hmac "${ARGS[1]}" "${ARGS[2]:-}"
         ;;
     cors)
-        [ -n "${ARGS[1]:-}" ] || die "請指定允許的來源，例如: ./gcs.sh cors https://app.example.com"
-        cmd_cors "${ARGS[1]}"
+        [ -n "${ARGS[1]:-}" ] || die "請指定允許的來源，例如: ./gcs.sh cors https://app.example.com my-app-uploads"
+        cmd_cors "${ARGS[1]}" "${ARGS[2]:-}"
         ;;
     generate_github_secrets)
         [ -n "${ARGS[1]:-}" ] || die "請指定 GitHub repo，例如: ./gcs.sh generate_github_secrets fred/go-api"
