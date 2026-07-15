@@ -203,11 +203,12 @@ ensure_backend() {
     if global_exists backend-services "${bs}"; then
         info "Backend service '${bs}' 已存在，跳過。"
     else
+        # 不帶 --protocol：指定協定會讓 gcloud 自動設 portName，
+        # 而 serverless NEG 的 backend service 不允許 portName（add-backend 會 412）
         gcloud compute backend-services create "${bs}" \
             --project="${PROJECT_ID}" \
             --global \
-            --load-balancing-scheme=EXTERNAL_MANAGED \
-            --protocol=HTTPS
+            --load-balancing-scheme=EXTERNAL_MANAGED
         ok "Backend service '${bs}' 建立完成。"
     fi
 
