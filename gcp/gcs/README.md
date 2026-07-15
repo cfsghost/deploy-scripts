@@ -11,7 +11,7 @@
 ## 前置需求
 
 - gcloud CLI 已登入（建議直接用 [GCP Cloud Shell](https://shell.cloud.google.com/)）
-- `grant` / `create_hmac` 以服務名稱指定目標時，該 Cloud Run 服務需**已完成第一次部署**（可搭配 `../cloudrun/wif.sh` 的流程）；服務還沒部署的話，可改給 **SA email** 直接授權執行身分（見常見問題）
+- `grant` / `create_hmac` 以服務名稱指定目標時，該 Cloud Run 服務需**已完成第一次部署**（可搭配 `../cloudrun/wif.sh` 的流程）；服務還沒部署的話，可用 **`default`**（專案預設 compute SA）或 **SA email** 直接授權執行身分（見常見問題）
 
 ## 快速開始
 
@@ -22,11 +22,11 @@
 
 到這裡，後端用**原生 GCS SDK** 就能存取了——Cloud Run 上的 Application Default Credentials 會自動生效，不需要任何金鑰，程式裡只要知道 bucket 名稱。
 
-> **服務還沒部署？** 把服務名稱換成執行身分的 **SA email**（帶 `@` 就會被視為 SA），部署前就能先開好權限；`create_hmac` 同理。未自訂執行身分的服務用專案預設 compute SA：
+> **服務還沒部署？** 服務名稱的位置換成 `default`，工具會自動授權**專案預設 compute SA**（未自訂執行身分的服務用的就是它），部署前就能先開好權限；`create_hmac` 同理。指定其他身分也可以直接給 SA email（帶 `@` 就會被視為 SA）：
 >
 > ```bash
-> ./gcs.sh grant <專案編號>-compute@developer.gserviceaccount.com my-app-uploads
-> # <專案編號>查法: gcloud projects describe <專案ID> --format="value(projectNumber)"
+> ./gcs.sh grant default my-app-uploads
+> ./gcs.sh grant runner@<專案ID>.iam.gserviceaccount.com my-app-uploads   # 自訂執行身分時
 > ```
 >
 > 或者什麼都不用做，等第一次部署完成後再 `grant`，服務不需重新部署即生效。詳見常見問題。
@@ -100,10 +100,11 @@ cd ../lb
 ```
 ./gcs.sh create <bucket名稱>            建立 bucket（uniform 權限、強制封鎖公開存取）
 ./gcs.sh create --public <bucket名稱>   建立【公開讀取】的 bucket
-./gcs.sh grant <Cloud Run服務|SA email> <bucket>
+./gcs.sh grant <Cloud Run服務|SA email|default> <bucket>
                                        授權服務的執行身分讀寫 bucket
-                                       （帶 '@' 視為 SA email，服務部署前可先授權）
-./gcs.sh create_hmac <Cloud Run服務|SA email> <bucket>
+                                       （'default' = 專案預設 compute SA、帶 '@' 視為
+                                       SA email，兩者都不需要服務已部署）
+./gcs.sh create_hmac <Cloud Run服務|SA email|default> <bucket>
                                        產生 S3 相容 HMAC 金鑰，輸出 .env 格式連線資訊
 ./gcs.sh cors <來源> <bucket>           設定 CORS（瀏覽器直傳用）
 ./gcs.sh generate_github_secrets <owner/repo> [env檔]
@@ -124,7 +125,7 @@ cd ../lb
 
 ## 常見問題
 
-- **服務還沒部署，怎麼先 grant？**：`grant` 授權的其實是服務的**執行身分 SA**，不是服務本身，所以把服務名稱換成 SA email（帶 `@` 就會被視為 SA）即可在部署前先開好權限。走本 repo `wif.sh` 流程部署的服務沒有自訂執行身分，用的是專案預設 compute SA：`<專案編號>-compute@developer.gserviceaccount.com`（專案編號用 `gcloud projects describe <專案ID> --format="value(projectNumber)"` 查得）。`create_hmac` 同理——HMAC 金鑰掛在 SA 上，服務部署前就能先產。也可以什麼都不做，等第一次部署完成後再照一般流程 `grant <服務> <bucket>`，服務不需要重新部署即生效。
+- **服務還沒部署，怎麼先 grant？**：`grant` 授權的其實是服務的**執行身分 SA**，不是服務本身，所以只要指定 SA 就能在部署前先開好權限。走本 repo `wif.sh` 流程部署的服務沒有自訂執行身分，用的是專案預設 compute SA——服務名稱的位置寫 `default` 就是它，工具會自動查出完整 email（`<專案編號>-compute@developer.gserviceaccount.com`）；自訂執行身分的服務則直接給 SA email。`create_hmac` 同理——HMAC 金鑰掛在 SA 上，服務部署前就能先產。也可以什麼都不做，等第一次部署完成後再照一般流程 `grant <服務> <bucket>`，服務不需要重新部署即生效。
 - **bucket 名稱被占用**：bucket 名稱是**全球唯一**的（跟所有 GCP 用戶共用命名空間），短名稱很容易撞名；建議加上專案相關前綴（如 `<專案ID>-uploads`），撞名時換一個即可。
 - **檔案要讓使用者下載**：私有 bucket 封鎖了公開存取，請由後端簽發 presigned URL（GCS 原生叫 signed URL，S3 SDK 的 presign 也相容），或經後端轉發。這是刻意的設計——上傳內容不應該整桶公開；真正的公開檔案請放 `create --public` 建立的公開 bucket。
 - **HMAC 金鑰洩漏了**：`gcloud storage hmac list` 找出 access ID，`gcloud storage hmac update <access-id> --deactivate` 停用後 `gcloud storage hmac delete <access-id>` 刪除，再重新 `create_hmac`。每個執行身分最多 10 把金鑰。
