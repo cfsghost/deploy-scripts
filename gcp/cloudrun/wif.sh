@@ -550,12 +550,15 @@ jobs:
         echo "SERVICE_NAME=$SERVICE_NAME" >> $GITHUB_ENV
 
     # 透過 OIDC 登入 Google Cloud
+    # token_format 必須設為 access_token，下方 Docker login 才拿得到
+    # steps.auth.outputs.access_token（不設會是空值，噴 Password required）
     - name: Google Auth
       id: auth
       uses: google-github-actions/auth@v2
       with:
         workload_identity_provider: ${{ env.WIF_PROVIDER }}
         service_account: ${{ env.WIF_SERVICE_ACCOUNT }}
+        token_format: access_token
 
     # 登入 Artifact Registry
     - name: Docker Auth
