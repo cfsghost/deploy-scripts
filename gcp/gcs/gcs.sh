@@ -5,8 +5,9 @@
 # 用法:
 #   ./gcs.sh create <bucket名稱>            建立 bucket（不開公開存取）
 #   ./gcs.sh create --public <bucket名稱>   建立公開讀取的 bucket
-#   ./gcs.sh grant <Cloud Run服務> <bucket> 授權服務的執行身分讀寫 bucket（原生 GCS SDK 免金鑰）
-#   ./gcs.sh create_hmac <Cloud Run服務> <bucket>
+#   ./gcs.sh grant <Cloud Run服務|SA email> <bucket>
+#                                          授權服務的執行身分讀寫 bucket（原生 GCS SDK 免金鑰）
+#   ./gcs.sh create_hmac <Cloud Run服務|SA email> <bucket>
 #                                          產生 S3 相容 HMAC 金鑰，輸出 .env 格式連線資訊
 #   ./gcs.sh cors <來源> <bucket>           設定 CORS（瀏覽器直傳 presigned URL 用）
 #   ./gcs.sh generate_github_secrets <owner/repo> [env檔]
@@ -36,9 +37,13 @@ usage() {
   create --public <bucket名稱>   建立【公開讀取】的 bucket（整桶任何人可讀！）
                                  放網站靜態資源、公開下載檔用
                                  可再用 ../lb/lb.sh add_rule 掛自訂網域 + CDN
-  grant <Cloud Run服務> <bucket> 授權服務的執行身分讀寫 bucket
+  grant <Cloud Run服務|SA email> <bucket>
+                                 授權服務的執行身分讀寫 bucket
                                  （服務用原生 GCS SDK 時做到這步即可，免金鑰）
-  create_hmac <Cloud Run服務> <bucket>
+                                 服務尚未部署時可直接給 SA email（含 '@' 即視為 SA），
+                                 未自訂執行身分的服務用專案預設 compute SA：
+                                 <專案編號>-compute@developer.gserviceaccount.com
+  create_hmac <Cloud Run服務|SA email> <bucket>
                                  為服務的執行身分產生 S3 相容 HMAC 金鑰，
                                  輸出 .env 格式（狀態訊息走 stderr，stdout 可直接存檔）
                                  服務用 AWS S3 SDK / MinIO client 時才需要
@@ -65,6 +70,7 @@ usage() {
 範例:
   ./gcs.sh create my-app-uploads
   ./gcs.sh grant my-backend my-app-uploads
+  ./gcs.sh grant 123456789-compute@developer.gserviceaccount.com my-app-uploads
   ./gcs.sh create_hmac my-backend my-app-uploads > .env.storage
   ./gcs.sh generate_github_secrets fred/go-api
   ./gcs.sh cors https://app.example.com my-app-uploads
@@ -103,17 +109,37 @@ require_bucket() {
 
 # 取得 Cloud Run 服務的執行身分（未自訂時為專案預設 compute SA）
 resolve_service_sa() {
-    local svc="$1" sa
-    sa=$(gcloud run services describe "${svc}" \
+    local svc="$1" sa pn
+    if ! sa=$(gcloud run services describe "${svc}" \
         --region="${REGION}" --project="${PROJECT_ID}" \
-        --format="value(spec.template.spec.serviceAccountName)" 2>/dev/null) \
-        || die "找不到 Cloud Run 服務 '${svc}'（區域: ${REGION}），服務需先完成第一次部署。"
+        --format="value(spec.template.spec.serviceAccountName)" 2>/dev/null); then
+        pn=$(gcloud projects describe "${PROJECT_ID}" --format="value(projectNumber)" 2>/dev/null || true)
+        die "找不到 Cloud Run 服務 '${svc}'（區域: ${REGION}），服務需先完成第一次部署。
+   服務部署前想先授權的話，可直接指定執行身分的 SA email：
+   未自訂執行身分時為 ${pn:-<專案編號>}-compute@developer.gserviceaccount.com"
+    fi
     if [ -z "${sa}" ]; then
-        local pn
         pn=$(gcloud projects describe "${PROJECT_ID}" --format="value(projectNumber)")
         sa="${pn}-compute@developer.gserviceaccount.com"
     fi
     echo "${sa}"
+}
+
+# 解析授權目標：含 '@' 視為 SA email（服務部署前可先授權），否則視為 Cloud Run 服務名稱
+resolve_target_sa() {
+    local target="$1"
+    case "${target}" in
+        *@*)
+            echo "${target}" | grep -Eq '^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$' \
+                || die "SA email 格式錯誤: '${target}'"
+            gcloud iam service-accounts describe "${target}" --project="${PROJECT_ID}" &>/dev/null \
+                || die "找不到 service account '${target}'，請確認 email 是否正確（gcloud iam service-accounts list）。"
+            echo "${target}"
+            ;;
+        *)
+            resolve_service_sa "${target}"
+            ;;
+    esac
 }
 
 # ==========================================
@@ -190,17 +216,25 @@ cmd_grant() {
     require_bucket
 
     local sa
-    sa=$(resolve_service_sa "${svc}")
-    echo "🔑 授權服務 '${svc}'（執行身分: ${sa}）讀寫 bucket '${BUCKET}'..."
+    sa=$(resolve_target_sa "${svc}")
+    if [ "${sa}" = "${svc}" ]; then
+        echo "🔑 授權 service account '${sa}' 讀寫 bucket '${BUCKET}'..."
+    else
+        echo "🔑 授權服務 '${svc}'（執行身分: ${sa}）讀寫 bucket '${BUCKET}'..."
+    fi
 
     gcloud storage buckets add-iam-policy-binding "gs://${BUCKET}" \
         --project="${PROJECT_ID}" \
         --member="serviceAccount:${sa}" \
         --role="roles/storage.objectAdmin" >/dev/null
 
-    ok "服務 '${svc}' 已可讀寫 bucket '${BUCKET}'。"
+    if [ "${sa}" = "${svc}" ]; then
+        ok "service account '${sa}' 已可讀寫 bucket '${BUCKET}'。"
+    else
+        ok "服務 '${svc}' 已可讀寫 bucket '${BUCKET}'。"
+    fi
     info "服務內用原生 GCS SDK（Application Default Credentials）即可存取，不需要任何金鑰。"
-    info "改用 AWS S3 SDK / MinIO client 的話，再執行 './gcs.sh create_hmac ${svc}' 產生金鑰。"
+    info "改用 AWS S3 SDK / MinIO client 的話，再執行 './gcs.sh create_hmac ${svc} ${BUCKET}' 產生金鑰。"
 }
 
 # ==========================================
@@ -215,8 +249,12 @@ cmd_create_hmac() {
     require_bucket
 
     local sa key_info access_id secret
-    sa=$(resolve_service_sa "${svc}")
-    echo "⏳ 為服務 '${svc}' 的執行身分（${sa}）產生 HMAC 金鑰..." >&2
+    sa=$(resolve_target_sa "${svc}")
+    if [ "${sa}" = "${svc}" ]; then
+        echo "⏳ 為 service account '${sa}' 產生 HMAC 金鑰..." >&2
+    else
+        echo "⏳ 為服務 '${svc}' 的執行身分（${sa}）產生 HMAC 金鑰..." >&2
+    fi
 
     key_info=$(gcloud storage hmac create "${sa}" \
         --project="${PROJECT_ID}" \
@@ -405,11 +443,11 @@ COMMAND="${ARGS[0]:-}"
 case "${COMMAND}" in
     create) cmd_create "${ARGS[1]:-}" ;;
     grant)
-        [ -n "${ARGS[1]:-}" ] || die "請指定 Cloud Run 服務名稱，例如: ./gcs.sh grant my-backend my-app-uploads"
+        [ -n "${ARGS[1]:-}" ] || die "請指定 Cloud Run 服務名稱或 SA email，例如: ./gcs.sh grant my-backend my-app-uploads"
         cmd_grant "${ARGS[1]}" "${ARGS[2]:-}"
         ;;
     create_hmac)
-        [ -n "${ARGS[1]:-}" ] || die "請指定 Cloud Run 服務名稱，例如: ./gcs.sh create_hmac my-backend my-app-uploads"
+        [ -n "${ARGS[1]:-}" ] || die "請指定 Cloud Run 服務名稱或 SA email，例如: ./gcs.sh create_hmac my-backend my-app-uploads"
         cmd_create_hmac "${ARGS[1]}" "${ARGS[2]:-}"
         ;;
     cors)
