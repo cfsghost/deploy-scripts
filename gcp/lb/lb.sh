@@ -6,7 +6,9 @@
 #   ./lb.sh init                          建立基礎設施：靜態 IP、HTTP→HTTPS 轉址（每組 LB 一次）
 #   ./lb.sh add_domain <網域>             掛上網域（建立 Google 管理憑證）
 #   ./lb.sh add_rule <網域> <路徑> <服務>  設定該網域下路徑對應的 Cloud Run 服務
-#                                         路徑 '/' 代表該網域的預設服務（需最先設定）
+#   ./lb.sh add_rule <網域> <路徑> --bucket <bucket>
+#                                         規則目標改為公開 GCS bucket（CDN）
+#                                         路徑 '/' 代表該網域的預設目標（需最先設定）
 #   ./lb.sh remove_rule <網域> <路徑>     移除規則
 #   ./lb.sh remove_domain <網域>          卸下網域（移除規則與憑證）
 #   ./lb.sh list                          列出所有網域與規則
@@ -23,6 +25,7 @@ set -eo pipefail
 REGION="${LB_REGION:-asia-east1}"       # Cloud Run 服務所在區域
 LB_NAME="${LB_NAME:-web}"               # 元件命名用，一組 LB 一個名字
 PROJECT_ID="${LB_PROJECT_ID:-}"
+BUCKET_TARGET=""                        # add_rule --bucket 選項：規則目標改為 GCS bucket
 
 # ==========================================
 # 🛠️ 共用函式
@@ -35,10 +38,13 @@ usage() {
   init                        建立基礎設施：靜態 IP、HTTP→HTTPS 轉址（每組 LB 一次）
   add_domain <網域>           掛上網域（建立 Google 管理憑證，DNS 生效後自動簽發）
   add_rule <網域> <路徑> <服務>
-                              設定該網域下路徑對應的 Cloud Run 服務
-                              路徑 '/' 代表該網域的預設服務，需最先設定
+  add_rule <網域> <路徑> --bucket <bucket>
+                              設定該網域下路徑對應的目標：Cloud Run 服務，
+                              或公開 GCS bucket（自動建 backend bucket 並開 CDN）
+                              路徑 '/' 代表該網域的預設目標，需最先設定
                               例: add_rule app.example.com / my-frontend
                                   add_rule app.example.com '/api/*' my-backend
+                                  add_rule files.example.com / --bucket my-proj-public
   remove_rule <網域> <路徑>   移除該網域下的規則
   remove_domain <網域>        卸下網域（移除其規則與憑證）
   list                        列出所有網域與規則
@@ -52,6 +58,7 @@ usage() {
   -p, --project <id>    指定 GCP 專案 ID（預設: $LB_PROJECT_ID 或 gcloud config 目前專案）
   -n, --name <名稱>     LB 元件命名（預設: $LB_NAME 或 web；同專案建第二組 LB 時使用）
   --region <區域>       Cloud Run 服務所在區域（預設: $LB_REGION 或 asia-east1）
+  --bucket <bucket>     add_rule 的目標改為 GCS bucket（bucket 需可公開讀取）
   -h, --help            顯示此說明
 
 環境變數:
@@ -64,8 +71,8 @@ usage() {
   ./lb.sh add_domain app.example.com
   ./lb.sh add_rule app.example.com / my-frontend
   ./lb.sh add_rule app.example.com '/api/*' my-backend
-  ./lb.sh add_domain admin.example.com
-  ./lb.sh add_rule admin.example.com / my-admin
+  ./lb.sh add_domain files.example.com
+  ./lb.sh add_rule files.example.com / --bucket my-proj-public
   ./lb.sh list
 EOF
 }
@@ -104,6 +111,15 @@ set_names() {
 sanitize() { echo "$1" | tr '.' '-'; }
 cert_name_of() { echo "cert-${LB_NAME}-$(sanitize "$1")"; }
 pm_name_of() { echo "pm-$(sanitize "$1")"; }
+bb_name_of() { echo "bb-$(echo "$1" | tr '._' '--')"; }   # GCS bucket → backend bucket 名稱
+
+# 規則目標的顯示名稱（bs-svc → svc，bb-bucket → bucket:<名稱>）
+target_label() {
+    case "$1" in
+        bb-*) echo "bucket:${1#bb-}" ;;
+        *)    echo "${1#bs-}" ;;
+    esac
+}
 
 validate_domain() {
     echo "$1" | grep -Eq '^([A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z]{2,}$' \
@@ -134,7 +150,8 @@ cert_domain_of() {  # <憑證名稱> → 網域
         --format="value(managed.domains)" 2>/dev/null || true
 }
 
-# 讀取網域目前的規則，每行 "路徑|bs名稱"，預設服務為 "DEFAULT|bs名稱"；網域未設定時輸出空
+# 讀取網域目前的規則，每行 "路徑|目標名稱"（bs-* 為 Cloud Run 服務、bb-* 為 GCS bucket），
+# 預設目標為 "DEFAULT|目標名稱"；網域未設定時輸出空
 get_domain_rules() {
     local pm
     pm=$(pm_name_of "$1")
@@ -145,13 +162,17 @@ get_domain_rules() {
             active && /^    - \// { path = $2 }
             active && /^    service: / { print path "|" $NF }
         ' \
-        | sed 's|https://.*/backendServices/||' || true
+        | sed -e 's|https://.*/backendServices/||' -e 's|https://.*/backendBuckets/||' || true
 }
 
-# 從 URL map 找出這組 LB 用到的 backend services（check / delete 反查用）
+# 從 URL map 找出這組 LB 用到的 backend services / backend buckets（check / delete 反查用）
 get_lb_backend_services() {
     gcloud compute url-maps describe "${UM_NAME}" --global --project="${PROJECT_ID}" --format=yaml 2>/dev/null \
         | grep -o 'backendServices/[A-Za-z0-9-]*' | sed 's|backendServices/||' | sort -u || true
+}
+get_lb_backend_buckets() {
+    gcloud compute url-maps describe "${UM_NAME}" --global --project="${PROJECT_ID}" --format=yaml 2>/dev/null \
+        | grep -o 'backendBuckets/[A-Za-z0-9-]*' | sed 's|backendBuckets/||' | sort -u || true
 }
 
 # 找出 backend service 掛的 serverless NEG 名稱
@@ -203,10 +224,50 @@ ensure_backend() {
     fi
 }
 
-# 規則移除後，backend service 若已不被專案內任何 URL map 引用，連同 NEG 清除
+# 為一個 GCS bucket 準備 backend bucket（冪等；GCS bucket 本身不歸這裡管）
+ensure_backend_bucket() {
+    local bucket="$1" bb pap
+    bb=$(bb_name_of "${bucket}")
+
+    gcloud storage buckets describe "gs://${bucket}" --project="${PROJECT_ID}" &>/dev/null \
+        || die "找不到 GCS bucket '${bucket}'，請先用 '../gcs/gcs.sh create --public ${bucket}' 建立。"
+
+    # LB 是匿名對外服務，bucket 必須開放公開讀取才拿得到檔案
+    pap=$(gcloud storage buckets describe "gs://${bucket}" --project="${PROJECT_ID}" \
+        --format="value(public_access_prevention)" 2>/dev/null || true)
+    if [ "${pap}" = "enforced" ]; then
+        echo "⚠️  bucket '${bucket}' 封鎖了公開存取，掛上後瀏覽器會拿到 403。" >&2
+        echo "   公開檔案請改用 '../gcs/gcs.sh create --public' 建立的 bucket（私人檔案不應掛 domain）。" >&2
+    fi
+
+    if global_exists backend-buckets "${bb}"; then
+        info "Backend bucket '${bb}' 已存在，跳過。"
+    else
+        gcloud compute backend-buckets create "${bb}" \
+            --project="${PROJECT_ID}" \
+            --gcs-bucket-name="${bucket}" \
+            --enable-cdn
+        ok "Backend bucket '${bb}' 建立完成（→ gs://${bucket}，已開 CDN）。"
+    fi
+}
+
+# 規則移除後，目標（backend service / backend bucket）若已不被專案內任何 URL map 引用，
+# 連同附屬資源清除
 cleanup_orphan_backend() {
     local bs="$1"
     [ -n "${bs}" ] || return 0
+
+    if [ "${bs#bb-}" != "${bs}" ]; then
+        global_exists backend-buckets "${bs}" || return 0
+        if gcloud compute url-maps list --project="${PROJECT_ID}" --format=yaml 2>/dev/null \
+            | grep -q "backendBuckets/${bs}$"; then
+            return 0
+        fi
+        gcloud compute backend-buckets delete "${bs}" --global --project="${PROJECT_ID}" --quiet
+        ok "Backend bucket '${bs}' 已無規則引用，已一併清除（GCS bucket 與檔案不受影響）。"
+        return 0
+    fi
+
     global_exists backend-services "${bs}" || return 0
     if gcloud compute url-maps list --project="${PROJECT_ID}" --format=yaml 2>/dev/null \
         | grep -q "backendServices/${bs}$"; then
@@ -383,24 +444,33 @@ cmd_add_domain() {
 # ==========================================
 
 # 以「現有規則 ± 異動」重建網域的 path matcher
-rebuild_path_matcher() {  # <網域> <預設bs> <規則列表: 每行 "路徑|bs">
-    local domain="$1" default_bs="$2" rules="$3"
+rebuild_path_matcher() {  # <網域> <預設目標> <規則列表: 每行 "路徑|目標">
+    local domain="$1" default_tgt="$2" rules="$3"
     local pm
     pm=$(pm_name_of "${domain}")
 
-    # 組 --path-rules 參數（路徑1=bs1,路徑2=bs2）
-    local csv="" p s
+    # 服務與 bucket 走不同參數，各組各的 csv（路徑1=目標1,路徑2=目標2）
+    local svc_csv="" bkt_csv="" p s
     while IFS='|' read -r p s; do
         [ -n "${p}" ] || continue
-        csv="${csv:+${csv},}${p}=${s}"
+        case "${s}" in
+            bb-*) bkt_csv="${bkt_csv:+${bkt_csv},}${p}=${s}" ;;
+            *)    svc_csv="${svc_csv:+${svc_csv},}${p}=${s}" ;;
+        esac
     done <<< "${rules}"
 
-    # URL map 不存在時先建立（全域預設掛第一個服務，未匹配網域的流量會落到這裡）
+    local default_flag
+    case "${default_tgt}" in
+        bb-*) default_flag="--default-backend-bucket=${default_tgt}" ;;
+        *)    default_flag="--default-service=${default_tgt}" ;;
+    esac
+
+    # URL map 不存在時先建立（全域預設掛第一個目標，未匹配網域的流量會落到這裡）
     if ! global_exists url-maps "${UM_NAME}"; then
         gcloud compute url-maps create "${UM_NAME}" \
             --project="${PROJECT_ID}" \
             --global \
-            --default-service="${default_bs}"
+            "${default_flag}"
         ok "URL map '${UM_NAME}' 建立完成。"
     elif [ -n "$(get_domain_rules "${domain}")" ]; then
         # 已有此網域的 matcher → 先移除再重建（gcloud 無法就地修改）
@@ -411,14 +481,13 @@ rebuild_path_matcher() {  # <網域> <預設bs> <規則列表: 每行 "路徑|bs
     fi
 
     local rule_flags=()
-    if [ -n "${csv}" ]; then
-        rule_flags=(--path-rules="${csv}")
-    fi
+    [ -n "${svc_csv}" ] && rule_flags+=(--path-rules="${svc_csv}")
+    [ -n "${bkt_csv}" ] && rule_flags+=(--backend-bucket-path-rules="${bkt_csv}")
     gcloud compute url-maps add-path-matcher "${UM_NAME}" \
         --project="${PROJECT_ID}" \
         --global \
         --path-matcher-name="${pm}" \
-        --default-service="${default_bs}" \
+        "${default_flag}" \
         --new-hosts="${domain}" \
         "${rule_flags[@]}"
 }
@@ -429,48 +498,62 @@ print_domain_rules() {
     while IFS='|' read -r p s; do
         [ -n "${p}" ] || continue
         if [ "${p}" = "DEFAULT" ]; then
-            printf "   %-12s → %s（預設）\n" "/" "${s#bs-}"
+            printf "   %-12s → %s（預設）\n" "/" "$(target_label "${s}")"
         else
-            printf "   %-12s → %s\n" "${p}" "${s#bs-}"
+            printf "   %-12s → %s\n" "${p}" "$(target_label "${s}")"
         fi
     done <<< "$(get_domain_rules "${domain}")"
 }
 
 cmd_add_rule() {
-    local domain="$1" path="$2" svc="$3"
+    local domain="$1" path="$2" svc="$3"   # svc 與 --bucket 擇一
     validate_domain "${domain}"
     echo "${path}" | grep -q '^/' || die "路徑需以 '/' 開頭，例如 / 或 /api/*"
-    echo "${svc}" | grep -Eq '^[a-z0-9-]+$' || die "服務名稱格式錯誤: '${svc}'"
     require_login
     resolve_project
+
+    # 決定規則目標：Cloud Run 服務（bs-*）或 GCS bucket（bb-*）
+    local tgt
+    if [ -n "${BUCKET_TARGET}" ]; then
+        [ -z "${svc}" ] || die "服務與 --bucket 只能擇一，例如: ./lb.sh add_rule ${domain} ${path} --bucket ${BUCKET_TARGET}"
+        echo "${BUCKET_TARGET}" | grep -Eq '^[a-z0-9][a-z0-9._-]*$' || die "bucket 名稱格式錯誤: '${BUCKET_TARGET}'"
+        tgt=$(bb_name_of "${BUCKET_TARGET}")
+    else
+        echo "${svc}" | grep -Eq '^[a-z0-9-]+$' || die "服務名稱格式錯誤: '${svc}'"
+        tgt="bs-${svc}"
+    fi
 
     global_exists ssl-certificates "$(cert_name_of "${domain}")" \
         || die "網域 '${domain}' 尚未掛上，請先執行 './lb.sh add_domain ${domain}'。"
 
-    ensure_backend "${svc}"
+    if [ -n "${BUCKET_TARGET}" ]; then
+        ensure_backend_bucket "${BUCKET_TARGET}"
+    else
+        ensure_backend "${svc}"
+    fi
 
     # 讀取現有規則，套上這次異動
-    local existing default_bs rules old_bs
+    local existing default_tgt rules old_tgt
     existing=$(get_domain_rules "${domain}")
-    default_bs=$(echo "${existing}" | awk -F'|' '$1 == "DEFAULT" { print $2 }')
+    default_tgt=$(echo "${existing}" | awk -F'|' '$1 == "DEFAULT" { print $2 }')
     rules=$(echo "${existing}" | awk -F'|' -v p="${path}" '$1 != "DEFAULT" && $1 != p' || true)
 
     if [ "${path}" = "/" ]; then
-        old_bs="${default_bs}"
-        default_bs="bs-${svc}"
+        old_tgt="${default_tgt}"
+        default_tgt="${tgt}"
     else
-        [ -n "${default_bs}" ] \
+        [ -n "${default_tgt}" ] \
             || die "網域 '${domain}' 還沒有預設服務，請先執行 './lb.sh add_rule ${domain} / <服務>'。"
-        old_bs=$(echo "${existing}" | awk -F'|' -v p="${path}" '$1 == p { print $2 }')
-        rules=$(printf '%s\n%s' "${rules}" "${path}|bs-${svc}")
+        old_tgt=$(echo "${existing}" | awk -F'|' -v p="${path}" '$1 == p { print $2 }')
+        rules=$(printf '%s\n%s' "${rules}" "${path}|${tgt}")
     fi
 
-    rebuild_path_matcher "${domain}" "${default_bs}" "${rules}"
+    rebuild_path_matcher "${domain}" "${default_tgt}" "${rules}"
     ensure_https
 
-    # 覆蓋規則時，被換掉的服務若已無任何規則引用，順手清除
-    if [ -n "${old_bs}" ] && [ "${old_bs}" != "bs-${svc}" ]; then
-        cleanup_orphan_backend "${old_bs}"
+    # 覆蓋規則時，被換掉的目標若已無任何規則引用，順手清除
+    if [ -n "${old_tgt}" ] && [ "${old_tgt}" != "${tgt}" ]; then
+        cleanup_orphan_backend "${old_tgt}"
     fi
 
     echo ""
@@ -633,12 +716,15 @@ cmd_check() {
     fi
 
     check_item "URL map '${UM_NAME}'" gcloud compute url-maps describe "${UM_NAME}" --global --project="${PROJECT_ID}"
-    local bs neg
+    local bs neg bb
     for bs in $(get_lb_backend_services); do
         check_item "Backend service '${bs}'" gcloud compute backend-services describe "${bs}" --global --project="${PROJECT_ID}"
         for neg in $(get_bs_negs "${bs}"); do
             check_item "Serverless NEG '${neg}'" gcloud compute network-endpoint-groups describe "${neg}" --region="${REGION}" --project="${PROJECT_ID}"
         done
+    done
+    for bb in $(get_lb_backend_buckets); do
+        check_item "Backend bucket '${bb}'" gcloud compute backend-buckets describe "${bb}" --global --project="${PROJECT_ID}"
     done
     check_item "HTTPS proxy '${HTTPS_PROXY_NAME}'" gcloud compute target-https-proxies describe "${HTTPS_PROXY_NAME}" --global --project="${PROJECT_ID}"
     check_item "HTTP 轉址 proxy '${HTTP_PROXY_NAME}'" gcloud compute target-http-proxies describe "${HTTP_PROXY_NAME}" --global --project="${PROJECT_ID}"
@@ -719,17 +805,18 @@ cmd_delete() {
     resolve_project
 
     echo "⚠️  即將刪除 LB '${LB_NAME}' 的所有元件（專案: ${PROJECT_ID}）："
-    echo "⚠️  forwarding rules、proxies、URL maps、所有網域憑證、backend services、NEGs、靜態 IP"
-    echo "⚠️  Cloud Run 服務本身不會被刪除，但所有網域將無法連到服務。"
+    echo "⚠️  forwarding rules、proxies、URL maps、所有網域憑證、backend services/buckets、NEGs、靜態 IP"
+    echo "⚠️  Cloud Run 服務與 GCS bucket 本身不會被刪除，但所有網域將無法連到它們。"
     printf "確認刪除請輸入 LB 名稱（%s）: " "${LB_NAME}"
     read -r answer
     if [ "${answer}" != "${LB_NAME}" ]; then
         die "輸入不符，已取消刪除。"
     fi
 
-    # 先反查這組 LB 的 backend services 與憑證，再依相依順序拆除
-    local bs_list cert_list bs neg cert
+    # 先反查這組 LB 的 backend services / buckets 與憑證，再依相依順序拆除
+    local bs_list bb_list cert_list bs bb neg cert
     bs_list=$(get_lb_backend_services)
+    bb_list=$(get_lb_backend_buckets)
     cert_list=$(list_lb_certs)
 
     if global_exists forwarding-rules "${FR_HTTPS_NAME}"; then
@@ -776,6 +863,12 @@ cmd_delete() {
             fi
         done
     done
+    for bb in ${bb_list}; do
+        if global_exists backend-buckets "${bb}"; then
+            gcloud compute backend-buckets delete "${bb}" --global --project="${PROJECT_ID}" --quiet
+            ok "已刪除 backend bucket '${bb}'（GCS bucket 與檔案不受影響）。"
+        fi
+    done
     if global_exists addresses "${IP_NAME}"; then
         gcloud compute addresses delete "${IP_NAME}" --global --project="${PROJECT_ID}" --quiet
         ok "已刪除靜態 IP '${IP_NAME}'。"
@@ -804,6 +897,11 @@ while [ $# -gt 0 ]; do
         --region)
             [ -n "${2:-}" ] || die "選項 '$1' 需要參數。"
             REGION="$2"
+            shift 2
+            ;;
+        --bucket)
+            [ -n "${2:-}" ] || die "選項 '$1' 需要參數。"
+            BUCKET_TARGET="$2"
             shift 2
             ;;
         -h|--help)
@@ -837,8 +935,10 @@ case "${COMMAND}" in
         cmd_remove_domain "${ARGS[1]}"
         ;;
     add_rule)
-        [ -n "${ARGS[3]:-}" ] || die "用法: ./lb.sh add_rule <網域> <路徑> <服務>，例如: ./lb.sh add_rule app.example.com / my-frontend"
-        cmd_add_rule "${ARGS[1]}" "${ARGS[2]}" "${ARGS[3]}"
+        [ -n "${ARGS[2]:-}" ] || die "用法: ./lb.sh add_rule <網域> <路徑> <服務|--bucket <bucket>>"
+        [ -n "${ARGS[3]:-}" ] || [ -n "${BUCKET_TARGET}" ] \
+            || die "請指定目標服務或 --bucket，例如: ./lb.sh add_rule app.example.com / my-frontend 或 ./lb.sh add_rule files.example.com / --bucket my-public"
+        cmd_add_rule "${ARGS[1]}" "${ARGS[2]}" "${ARGS[3]:-}"
         ;;
     remove_rule)
         [ -n "${ARGS[2]:-}" ] || die "用法: ./lb.sh remove_rule <網域> <路徑>"

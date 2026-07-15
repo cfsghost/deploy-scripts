@@ -10,6 +10,7 @@
 | `cloudsql/` | `sql.sh` | Cloud SQL PostgreSQL 實例、資料庫、帳號 |
 | `cloudrun/` | `wif.sh` | WIF 免金鑰部署授權、GitHub Actions workflow 產生 |
 | `lb/` | `lb.sh` | 自訂網域 HTTPS LB，按路徑分流到前後端 Cloud Run 服務 |
+| `gcs/` | `gcs.sh` | 上傳檔案的物件儲存（GCS bucket，支援 S3 相容 API） |
 
 各工具的完整說明見各目錄的 README；本文描述如何把它們串起來。
 
@@ -110,6 +111,29 @@ cd ../lb
 ```
 
 可掛多個網域（共用同一個 IP），每個網域各自設定規則，詳見 `lb/README.md`。
+
+### 階段 7（選用）：上傳檔案的物件儲存
+
+後端需要存放使用者上傳的檔案時，建一個私有 bucket 給服務用：
+
+```bash
+cd ../gcs
+./gcs.sh create                                 # 建立 bucket（封鎖公開存取）
+./gcs.sh grant my-backend                       # 原生 GCS SDK 走 ADC，免金鑰
+./gcs.sh create_hmac my-backend > .env.storage       # 後端用 AWS S3 SDK 時才需要
+./gcs.sh generate_github_secrets <owner>/<repo>      # 轉進 GitHub Secrets
+```
+
+另有**公開檔案**（靜態資源、公開下載檔）要放時，另建一個公開 bucket，不要與私人上傳混桶；可搭配階段 6 的 LB 掛自訂網域 + CDN：
+
+```bash
+./gcs.sh create --public                                  # 建立 <專案ID>-public（整桶公開讀取）
+cd ../lb
+./lb.sh add_domain files.example.com
+./lb.sh add_rule files.example.com / --bucket <專案ID>-public
+```
+
+詳見 `gcs/README.md`（雙 bucket 架構）與 `lb/README.md`（掛 GCS bucket）。
 
 ## 精簡流程（不需要資料庫）
 
